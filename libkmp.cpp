@@ -13,8 +13,9 @@
 #include <sys/time.h>
 #include <random>
 
+#include "libkmp.h"
 #include "md5.h"
-#include "kmp.h"
+#include "ptp.cpp"
 
 using namespace std;
 
@@ -22,12 +23,27 @@ using namespace std;
 //char (*prand_str)(char *, const int);
 //int (*pgetIndexOf)(string, string);
 
+unsigned int get_rand_by_time(int delay_timeslice_num=0){
+	struct timespec now ={0, 0};
+	struct timespec slice = {0, g_timeslice};
+	clock_gettime(CLOCK_REALTIME, &now);
+	if(!g_is_server){
+		timespec_add(now, g_offset, now);
+		timespec_dec(now, g_delay, now);
+	}
+	now.tv_nsec -= now.tv_nsec % g_timeslice; //按时间片对齐
+	for(int i=0; i< delay_timeslice_num; ++i){
+		timespec_add(now, slice, now);
+	}
+	return easy_hash((unsigned char*)&now, sizeof(timespec));
+}
+
 unsigned int easy_hash(unsigned char *buf, unsigned int len)
 {
 	unsigned int hash = 0;
-	for(unsigned int i=0; i<len; ++i){
-		hash = (hash << 4 | hash >> 28); //循环左移4位
-		hash += buf[i];
+	for(unsigned int i=0; i<len*8; ++i){
+		hash = (hash << 5 | hash >> 24); //循环左移5位
+		hash += buf[i%len];
 	}
 	return hash;
 }
@@ -99,7 +115,7 @@ int getIndexOf(string s, string m) {
 			mi = next[mi];
 		}
 	}
-	delete next;	
+	delete next;
 
 	ins = (char*) malloc(4096);
 	if(!ins)
@@ -126,7 +142,8 @@ int getIndexOf(string s, string m) {
 	ui &= 0x7FFFFFFF;*/
 	unsigned int hash1 = easy_hash((unsigned char*)ins, 48 + s.length());
 	unsigned int hash2 = easy_hash((unsigned char*)g_cha_input, strlen(g_cha_input));
-	g_server_port = hash1 ^ hash2;
+	unsigned int randnum = get_rand_by_time();
+	g_server_port = hash1 ^ hash2 ^ randnum;
 	free(ins);
 	//printf("g_server_port=%d\n", g_server_port);
 	return mi == m.length() ? si - mi + 1 : -1;
@@ -195,9 +212,11 @@ char rand_str(char str[], const int len) {
 		ui += *(unsigned int*)((char*)buf1 + i * 4);
 	}
 	ui &= 0x7FFFFFFF;*/
+	//hash(函数+参数+随机数)
 	unsigned int hash1 = easy_hash((unsigned char*)ins, 48);
 	unsigned int hash2 = easy_hash((unsigned char*)g_cha_input, strlen(g_cha_input));
-	g_server_port = (hash1 ^ hash2 ^ len);
+	unsigned int randnum = get_rand_by_time();
+	g_server_port = (hash1 ^ hash2 ^ randnum ^ len);
 	free(ins);
 	return str[len];
 }

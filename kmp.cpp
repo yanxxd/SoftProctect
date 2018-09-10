@@ -14,8 +14,9 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include "libkmp.h"
 #include "md5.h"
-#include "kmp.h"
+#include "ptp.h"
 
 using namespace std;
 
@@ -36,12 +37,12 @@ int main(int argc,char *argv[]) {
 	int sendSize, recvSize;          //用于记录记录发送和接收到数据的大小
 	int pid;
 
-	if(2 != argc){
-		printf("\nUsage:\tkmp ip\n\n");
+	if(3 != argc){
+		printf("\nUsage:\tkmp interface ip\n\n");
 		return 0;
 	}
 
-	g_ip = argv[1];
+	g_ip = argv[2];
 	bool is_loop = true;
 
 	FILE *flog = fopen("time.log", "w");
@@ -55,15 +56,19 @@ int main(int argc,char *argv[]) {
 			fprintf(stderr, "connect server port %d error\n", g_server_port);
 			break;
 		}
+		//连接成功后先做时间同步
+		if( ptp_client(argv[1], g_ip, g_offset, g_delay) ){
+			printf("\n[!] Time Sync failed!\n\n");
+			break;
+		}
 		SSL_set_fd(ssl, sockfd);	  /* attach the socket descriptor */
 		if (1 != SSL_connect(ssl)) /* perform the connection */
 		{
 			ERR_print_errors_fp(stderr);
 			break;
 		}
-
 		int len;
-		while (fgets(sendBuf, 32, stdin)) {
+		while (fgets(sendBuf, 32, stdin)) { //一个指令,每个指令代表一个具体的功能
 			len = strlen(sendBuf);
 			sendBuf[len - 1] = 0; //去掉尾部的'\n'
 			if (SSL_write(ssl, sendBuf, 32) == -1) {
@@ -79,7 +84,7 @@ at_begin:
 				//把时间重置为0
 				memset(&g_time_consume_org, 0, sizeof(g_time_consume_org));		//原函数花费时间
 				memset(&g_time_consume, 0, sizeof(g_time_consume));				//加保护后花费时间
-				
+
 				//1
 				int n = 48, m = 6;
 				char *str = new char[n];
@@ -118,7 +123,7 @@ at_begin:
 				//3
 				int mi = kmp_getIndexOf(str, mstr, ssl);
 				if(-1 == mi){
-					fprintf(stderr, "fail to call getIndexOf().\n");
+					fprintf(stderr, "getIndexOf(): can't find \n");
 				}
 				printf("\n3 g_server_port=%u\n", g_server_port);
 				printf("The index of %s in %s is %d\n", mstr, str, mi);
@@ -191,7 +196,7 @@ char kmp_rand_str(char str[], const int len, SSL *ssl, bool protect){
 		fprintf(stderr, "rand_str():fail to recv x.\n");
 		return -1;
 	}
-	
+
 	//参数发给服务端
 	*(unsigned int*)sendBuf = g_server_port;
 	int sendSize = 4 + sprintf(sendBuf+4, "rand_str %d", len);

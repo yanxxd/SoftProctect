@@ -1,8 +1,8 @@
 PROJECT_ROOT = $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-OBJS = kmp.o md5.o
+OBJS = kmp.o md5.o ptp.o
 OBJS_LIB = libmd5.o libkmp.o
-OBJS_SERVER = kmp_server.o
+OBJS_SERVER = kmp_server.o ptp.o
 
 BUILD_MODE = run
 

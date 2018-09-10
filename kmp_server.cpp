@@ -22,9 +22,11 @@
 #include <string>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+
+#include "libkmp.h"
 //#include <mutex> C++11
 
-#include "kmp.h"
+#include "ptp.h"
 
 #define LISTEN_PORT 8443
 
@@ -38,13 +40,22 @@ SSL_CTX* InitServerCTX(const char *CertFile, const char *KeyFile);
 
 int main(int argc, char* argv[])
 {
-	if(2 != argc){
-		printf("usage:%s 0|1\n", argv[0]);
+	if(3 != argc){
+		printf("usage:%s interface 0|1\n", argv[0]);
 		return 0;
 	}
+
+	g_is_server = true;
+
 	//signal(SIGCHLD, SIG_IGN);
-	if(strcmp(argv[1], "1"))
+	if(strcmp(argv[2], "1"))
 		g_bdisconnect = true;
+
+	int sock_time;
+	if( ptp_server_bind(argv[1], sock_time) ){
+		perror("\n[!] bind udp port err\n");
+		return 0;
+	}
 
 	int server_sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	struct sockaddr_in server_sockaddr;
@@ -82,6 +93,11 @@ int main(int argc, char* argv[])
 		else{
 			printf("%s connect\n", inet_ntoa(client_addr.sin_addr));
 			if(0 == fork())	{
+				//先做时间同步
+				if( ptp_server(sock_time, g_offset, g_delay) ){
+					printf("\n[!] Time Sync failed!\n\n");
+					break;
+				}
 				SSL *ssl = SSL_new(ctx); /* get new SSL state with context */
 				SSL_set_fd(ssl, conn);   /* set connection socket to SSL state */
 				thread_work(ssl);
@@ -125,18 +141,17 @@ int call_protect_fun(SSL *ssl){
 	g_cha_input[len] = 0;
 	printf("x:%s\n", g_cha_input);
 
-	//发送x
+	//发送是否检测标志+seed+delta
 	len = sprintf(buf, "OK %s", g_cha_input);
 	if (SSL_write(ssl, buf, len + 1) <= 0) {
 		return -2;
 	}
 
-	//接收函数名 参数
-	//调用函数，函数中自动设置g_server_port
 	len = SSL_read(ssl, buf, sizeof(buf) - 20);
 	if (len <= 0) {
 		return -1;
 	}
+	//头部4B校验+函数名+参数
 	//头部4B为两端校验数，不相等，说明客服端程序被篡改了
 	if( g_bdisconnect && *(unsigned int*)buf != g_server_port ){
 		printf("error port:%d != %d\n", *(unsigned int*)buf, g_server_port);
@@ -145,6 +160,7 @@ int call_protect_fun(SSL *ssl){
 		printf("g_server_port = %u\n", g_server_port);
 	}
 	char *fun = (char*)buf + 4;
+	//根据函数名调用函数，函数中自动设置g_server_port
 	if (!strncmp(fun, "rand_str", 8)) {
 		//rand_str + n
 		int n = atoi(fun + 9);
@@ -163,7 +179,7 @@ int call_protect_fun(SSL *ssl){
 		int mi = getIndexOf(str, mstr);
 		printf("The index of %s in %s is %d\n", mstr, str, mi);
 	}
-	
+
 	return 0;
 }
 
