@@ -22,10 +22,13 @@ you can add current path to search path:
 **test separately ptp**  
 
 imitate ptp:  
+```
 c -> s	t1 send()  t2 recv   	c:t1  			s:t2  
 c <- s  t4 recv  t3 send(t2)  	c:t1,t2,t4 		s:t2,t3  
 c -> s  send(t1,t4)				c:t1,t2,t4		s:t1,t2,t3,t4  
 c <- s  send(t3)				c:t1,t2,t3,t4	s:t1,t2,t3,t4  
+```
+
 ```
 gcc -DPTP_SERVER ptp.cpp -o ptpd
 gcc -DPTP_CLIENT ptp.cpp -o ptp
