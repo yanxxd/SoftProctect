@@ -8,30 +8,39 @@
 #ifndef KMP_H_143ef87b_3aec_47f6_a33a_ed51e3e965ac
 #define KMP_H_143ef87b_3aec_47f6_a33a_ed51e3e965ac
 
+#include <time.h>
 #include <sys/time.h>
-#include <string.h>
-#include <string>
+#include <openssl/ssl.h>
+#include <stdbool.h>
 
-bool            g_is_server = false;		//服务器端为true 客户端为false
-int             g_server_port = 8443;       //两端用来同步的一个参数，kmp1中用这个作为新的端口，kmp2中只是做比较
-char            g_cha_input[256];
-unsigned int   g_seed = 0;                 //种子
-unsigned int   g_timestamp = 0;            //时间戳
-//std::mt19937    g_mt;						//伪随机数生成
-struct timespec g_offset;					//客户端和服务器的时间差 慢多少
-struct timespec g_delay;					//线路延迟
-time_t    		 g_timeslice = 200 * 1000 * 1000; //200ms一个时间片,变为ns表示
+#ifdef DBG_PRINT
+#define dbg_fprintf fprintf
+#define dbg_printf printf
+#else
+#define dbg_fprintf
+#define dbg_printf
+#endif
 
-struct timeval 	g_time_consume_org = {0};	//原函数花费时间
-struct timeval 	g_time_consume_sock = {0};	//端口重连花费时间
-struct timeval 	g_time_consume = {0};		//加保护后花费时间
+extern SSL				*g_ssl;
+extern bool            g_is_server;		//服务器端为true 客户端为false
+extern unsigned int   g_checksum;      //没有作为端口用了，两端用来同步的一个参数，kmp1中用这个作为新的端口，kmp2以后只是做比较用
+extern char            g_cha_input[256];	//x作为种子, update x when client recv data.
+extern struct timespec g_offset;			//客户端和服务器的时间差 慢多少
+extern struct timespec g_delay;			//线路延迟
+extern time_t    		 g_timeslice; 		//200ms一个时间片,变为ns表示
 
-char rand_str(char str[], const int len);
-int  getIndexOf(std::string s, std::string m);
-char rand_str_org(char str[], const int len);
-int  getIndexOf_org(std::string s, std::string m);
-int  connect_serv(char *ip, int port);
+#ifdef __cplusplus
+extern "C" {
+#endif
+void timeval_us_add(struct timeval *start, struct timeval *end, struct timeval *result);
+void timeval_us_sub(struct timeval *start, struct timeval *end, struct timeval *result);
+void timespec_add(struct timespec *t1, struct timespec *t2, struct timespec *ret);
+void timespec_dec(struct timespec *t1, struct timespec *t2, struct timespec *ret);
+unsigned int get_rand_by_time(int);//(int delay_timeslice_num=0);
 unsigned int easy_hash(unsigned char *buf, unsigned int len);
-
+int recv_seed_delta(SSL *ssl, int *is_check, int *delta);
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* KMP_H_ */

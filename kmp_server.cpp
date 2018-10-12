@@ -23,14 +23,17 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-#include "libkmp.h"
-//#include <mutex> C++11
-
 #include "ptp.h"
+#include "libkmp.h"
+#include "libtest.h"
+#include "kmp_server_check.cpp"
+//#include <mutex> C++11
 
 #define LISTEN_PORT 8443
 
 bool g_bdisconnect = false;	//校验不过时，是否断开连接
+
+int gen_random_str(char *buf, int len);
 
 void *thread_work(void *param);
 
@@ -48,7 +51,7 @@ int main(int argc, char* argv[])
 	g_is_server = true;
 
 	//signal(SIGCHLD, SIG_IGN);
-	if(strcmp(argv[2], "1"))
+	if(!strcmp(argv[2], "1"))
 		g_bdisconnect = true;
 
 	int sock_time;
@@ -94,10 +97,10 @@ int main(int argc, char* argv[])
 			printf("%s connect\n", inet_ntoa(client_addr.sin_addr));
 			if(0 == fork())	{
 				//先做时间同步
-				if( ptp_server(sock_time, g_offset, g_delay) ){
-					printf("\n[!] Time Sync failed!\n\n");
-					break;
-				}
+//				if( ptp_server(sock_time, g_offset, g_delay) ){
+//					printf("\n[!] Time Sync failed!\n\n");
+//					break;
+//				}
 				SSL *ssl = SSL_new(ctx); /* get new SSL state with context */
 				SSL_set_fd(ssl, conn);   /* set connection socket to SSL state */
 				thread_work(ssl);
@@ -123,66 +126,6 @@ int printf_current_time() {
 	return 0;
 }
 
-int gen_random_str(char *buf, int len)
-{
-	for(int i=0; i < len; ++i)
-	{
-		buf[i] = rand()%26 + 'a';
-	}
-	return len;
-}
-
-//根据函数名调用收保护函数
-//4B checksum + fun_name + param1 + param2 + ...
-int call_protect_fun(SSL *ssl){
-	char buf[1024];
-	//生成x
-	int len = gen_random_str(g_cha_input, rand() % 12 + 8);
-	g_cha_input[len] = 0;
-	printf("x:%s\n", g_cha_input);
-
-	//发送是否检测标志+seed+delta
-	len = sprintf(buf, "OK %s", g_cha_input);
-	if (SSL_write(ssl, buf, len + 1) <= 0) {
-		return -2;
-	}
-
-	len = SSL_read(ssl, buf, sizeof(buf) - 20);
-	if (len <= 0) {
-		return -1;
-	}
-	//头部4B校验+函数名+参数
-	//头部4B为两端校验数，不相等，说明客服端程序被篡改了
-	if( g_bdisconnect && *(unsigned int*)buf != g_server_port ){
-		printf("error port:%d != %d\n", *(unsigned int*)buf, g_server_port);
-		return -3;
-	} else {
-		printf("g_server_port = %u\n", g_server_port);
-	}
-	char *fun = (char*)buf + 4;
-	//根据函数名调用函数，函数中自动设置g_server_port
-	if (!strncmp(fun, "rand_str", 8)) {
-		//rand_str + n
-		int n = atoi(fun + 9);
-		char *str = new char[n];
-		printf("\nrand_str(%d)", n);
-		rand_str(str, n);
-		printf("\n====%s====\n", str);
-		delete str;
-
-	} else if (!strncmp(fun, "getIndexOf", 10)) {
-		//getIndexOf + str + mstr
-		char *p = strtok(fun, " ");
-		char *str = strtok(NULL, " ");
-		char *mstr = strtok(NULL, " ");
-		printf("getIndexOf(%s, %s)\n", str, mstr);
-		int mi = getIndexOf(str, mstr);
-		printf("The index of %s in %s is %d\n", mstr, str, mi);
-	}
-
-	return 0;
-}
-
 void *thread_work(void *pParam)
 {
 	SSL *ssl = (SSL *)pParam;
@@ -190,7 +133,10 @@ void *thread_work(void *pParam)
 	char buf_send[1024];
 	int len;
 	int conn = SSL_get_fd(ssl);
+	int iRet = 0;
+	void *handle = NULL;
 
+	g_ssl = ssl;
     if(1 != SSL_accept(ssl)){
 		ERR_print_errors_fp(stderr);
 		close(conn);
@@ -203,6 +149,7 @@ void *thread_work(void *pParam)
 	    srand(time(NULL));
 
 		//2. 接受命令
+		printf("\n*************************server recv command*************************\n");
 		len = SSL_read(ssl, buf, 32);
 		if (len <= 0) {
 			break;
@@ -212,21 +159,76 @@ void *thread_work(void *pParam)
 
 		if (!strncmp("quit", buf, 4)) {
 			break;
-		} else if (!strncmp("@", buf, 1)) {
-			//调用3个函数，需要循环3次
-			for(int i=0; i<3; ++i){
-				if(call_protect_fun(ssl))
-					break;
+		} else if (!strncmp("bzip2", buf, 5)) {
+			handle = dlopen("libbzip2pp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libbzip2.so error:%s\n", dlerror());
+				break;
 			}
+			iRet = check_bzip2(ssl, handle);
+		} else if (!strncmp("bpe", buf, 3)) {
+			handle = dlopen("libbpepp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libbpepp.so error:%s\n", dlerror());
+				break;
+			}
+			iRet = check_bpe(ssl, handle);
+		} else if (!strncmp("sort", buf, 4)) {
+			handle = dlopen("libtestpp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libtestpp.so error:%s\n", dlerror());
+				break;
+			}
+			iRet = check_sort(ssl, handle);
+		} else if (!strncmp("bignum", buf, 6)) {
+			handle = dlopen("libbnpp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libbnpp.so error:%s\n", dlerror());
+				break;
+			}
+			iRet = check_bignum(ssl, handle);
+		} else if (!strncmp("hmmer", buf, 5)) {
+			handle = dlopen("libhmmerpp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libhmmerpp.so error:%s\n", dlerror());
+				break;
+			}
+			iRet = check_hmmer(ssl, handle);
+		} else if (!strncmp("sjeng", buf, 5)) {
+			handle = dlopen("libsjengpp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libsjengpp.so error:%s\n", dlerror());
+				break;
+			}
+			iRet = check_sjeng(ssl, handle);
+		} else if (!strncmp("sjeng", buf, 5)) {
+			handle = dlopen("libh264refpp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libh264refpp.so error:%s\n", dlerror());
+				break;
+			}
+			iRet = check_h264ref(ssl, handle);
+		} else if (!strncmp("gene", buf, 4)) {
+			handle = dlopen("libgenepp.so", RTLD_LAZY);
+			if (!handle) {
+				fprintf(stderr, "load libgenepp.so error:%s\n", dlerror());
+				break;
+			}
+			iRet = check_gene(ssl, handle);
+		} else if (!strncmp("check ok", buf, 8)) {
+			continue;
 		} else {
 			len = sprintf(buf_send, "Hello, %s", buf);
 			if (SSL_write(ssl, buf_send, len + 1) <= 0) {
 				break;
 			}
 		}
+		if(handle)		dlclose(handle);
+		if(iRet)		break;
 
 	}//end of while (true)
 
+    fprintf(stderr, "\n*************************disconnect!*************************\n");
 	struct linger ling = {1, 0};
 	setsockopt(conn, SOL_SOCKET, SO_LINGER, &ling, sizeof(ling));
 	close(conn);

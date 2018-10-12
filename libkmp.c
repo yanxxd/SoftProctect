@@ -8,265 +8,107 @@
 #include <arpa/inet.h>
 #include <unistd.h>//pid_t fork(void);
 #include <signal.h>
-#include <string>
 #include <assert.h>
 #include <sys/time.h>
-#include <random>
 
 #include "libkmp.h"
-#include "md5.h"
-#include "ptp.cpp"
-
-using namespace std;
+//#include "md5.h"
 
 #define MAX_BUF 4096
+
+SSL				*g_ssl = NULL;
+bool            g_is_server = false;		//服务器端为true 客户端为false
+unsigned int   g_checksum = 8443;       //没有作为端口用了，两端用来同步的一个参数，kmp1中用这个作为新的端口，kmp2以后只是做比较用
+char            g_cha_input[256];			//x作为种子, update x when client recv data.
+struct timespec g_offset;					//客户端和服务器的时间差 慢多少
+struct timespec g_delay;					//线路延迟
+time_t    		 g_timeslice = 200 * 1000 * 1000; //200ms一个时间片,变为ns表示
+
 //char (*prand_str)(char *, const int);
 //int (*pgetIndexOf)(string, string);
 
-unsigned int get_rand_by_time(int delay_timeslice_num=0){
+void timeval_us_add(struct timeval *start, struct timeval *end, struct timeval *result){
+	result->tv_sec = end->tv_sec + start->tv_sec;
+	result->tv_usec = end->tv_usec + start->tv_usec;
+	if(result->tv_usec >= 1000000){
+		result->tv_sec += 1;
+		result->tv_usec -= 1000000;
+	}
+}
+void timeval_us_sub(struct timeval *start, struct timeval *end, struct timeval *result){
+	if(start->tv_usec <= end->tv_usec){
+		result->tv_sec = end->tv_sec - start->tv_sec;
+		result->tv_usec = end->tv_usec - start->tv_usec;
+	} else {
+		result->tv_sec = end->tv_sec - start->tv_sec - 1;
+		result->tv_usec = 1000000 + end->tv_usec - start->tv_usec;
+	}
+}
+
+void timespec_add(struct timespec *t1, struct timespec *t2, struct timespec *ret) {
+	ret->tv_sec = t1->tv_sec + t2->tv_sec;
+	ret->tv_nsec = t1->tv_nsec + t2->tv_nsec;
+	if (ret->tv_nsec >= 1000000000) {
+		ret->tv_nsec -= 1000000000;
+		++ret->tv_sec;
+	}
+}
+
+//tv_sec表示正负,结果中tv_nsec部分永远为正  {-1,500000000} 对应的数为 -1 + 0.5 = -0.5
+void timespec_dec(struct timespec *t1, struct timespec *t2, struct timespec *ret) {
+	ret->tv_sec = t1->tv_sec - t2->tv_sec;
+	ret->tv_nsec = t1->tv_nsec - t2->tv_nsec;
+	if (ret->tv_nsec < 0) {
+		ret->tv_nsec += 1000000000;
+		--ret->tv_sec;
+	}
+}
+
+unsigned int get_rand_by_time(int delay_timeslice_num){
 	struct timespec now ={0, 0};
 	struct timespec slice = {0, g_timeslice};
 	clock_gettime(CLOCK_REALTIME, &now);
-	if(!g_is_server){
-		timespec_add(now, g_offset, now);
-		timespec_dec(now, g_delay, now);
+	//dbg_fprintf(stdout, "\ncurrent time: %ld.%09ld", (long) now.tv_sec, (long) now.tv_nsec);
+	if(!g_is_server){ //服务器发送x后立即计算，客户端收到x后才开始计算
+		timespec_add(&now, &g_offset, &now);
+		timespec_dec(&now, &g_delay, &now);
 	}
 	now.tv_nsec -= now.tv_nsec % g_timeslice; //按时间片对齐
 	for(int i=0; i< delay_timeslice_num; ++i){
-		timespec_add(now, slice, now);
+		timespec_add(&now, &slice, &now);
 	}
-	return easy_hash((unsigned char*)&now, sizeof(timespec));
+	//dbg_fprintf(stdout, "\naligned time: %ld.%09ld\n", (long) now.tv_sec, (long) now.tv_nsec);
+	unsigned int hash1 = easy_hash((unsigned char*)&get_rand_by_time, 256);
+	unsigned int hash2 = easy_hash((unsigned char*)&now, sizeof(struct timespec));
+	return hash1 ^ hash2;
 }
 
 unsigned int easy_hash(unsigned char *buf, unsigned int len)
 {
 	unsigned int hash = 0;
-	for(unsigned int i=0; i<len*8; ++i){
-		hash = (hash << 5 | hash >> 24); //循环左移5位
-		hash += buf[i%len];
+	unsigned short *p = (unsigned short*)buf;
+	for(unsigned int i=0; i<len/2; ++i){
+		//hash = (hash << 5 | hash >> 27); //循环左移5位
+		hash += p[i%len];
 	}
+	if(len & 1)
+		hash += buf[len-1];
 	return hash;
 }
 
-int * getNextArray(string ms) {
-	if (ms.length() == 1) {
-		int *a = new int[1];
-		a[0] = -1;
-		return a;
-	}
-	int* next = new int[ms.length()];
-	next[0] = -1;
-	next[1] = 0;
-	int pos = 2;
-	int cn = 0;
-	while (pos < ms.length()) {          //next数组从2之后大于等于0
-		if (ms[pos - 1] == ms[cn]) {
-			next[pos++] = ++cn;
-		} else if (cn > 0) {
-			cn = next[cn];
-		} else {
-			next[pos++] = 0;
-		}
-	}
-	return next;
-}
-
-//s是原串,m是模式串
-int getIndexOf_org(string s, string m) {
-	//printf("s=%s, m=%s\n", s.c_str(), m.c_str());
-	char*ins;
-	if (s == "" || m == "" || m.length() < 1 || s.length() < m.length()) {
-		return -1;
-	}
-	int si = 0;
-	int mi = 0;
-	int* next = getNextArray(m);
-	while (si < s.length() && mi < m.length()) {
-		if (s[si] == m[mi]) {
-			si++;
-			mi++;
-		} else if (next[mi] == -1) {
-			si++;
-		} else {
-			mi = next[mi];
-		}
-	}
-	delete next;
-	return mi == m.length() ? si - mi + 1 : -1;
-}
-
-//s是原串,m是模式串
-int getIndexOf(string s, string m) {
-	//printf("s=%s, m=%s\n", s.c_str(), m.c_str());
-	char*ins;
-	if (s == "" || m == "" || m.length() < 1 || s.length() < m.length()) {
-		return -1;
-	}
-	int si = 0;
-	int mi = 0;
-	int* next = getNextArray(m);
-	while (si < s.length() && mi < m.length()) {
-		if (s[si] == m[mi]) {
-			si++;
-			mi++;
-		} else if (next[mi] == -1) {
-			si++;
-		} else {
-			mi = next[mi];
-		}
-	}
-	delete next;
-
-	ins = (char*) malloc(4096);
-	if(!ins)
-		return mi;
-	memcpy(ins, (char*) rand_str, 48);
-	strcpy(ins+48, s.c_str());
-	//for(int i = 0; i < 48; ++i)
-	//{
-	//	printf("%02x ", ins[i] & 0xFF);
-	//}
-	//printf("\n");
-
-	/*unsigned char buf1[16];
-	unsigned char buf2[16];
-	MD5Hash(buf1, (unsigned char*)ins, 48 + s.length());
-	MD5Hash(buf2, (unsigned char*)g_cha_input, strlen(g_cha_input));
-	for(int i = 0; i < 16; ++i){
-		buf1[i] ^= buf2[i];
-	}
-	unsigned int ui = 0;
-	for(int i = 0; i < 4; ++i){
-		ui += *(unsigned int*)((char*)buf1 + i * 4);
-	}
-	ui &= 0x7FFFFFFF;*/
-	unsigned int hash1 = easy_hash((unsigned char*)ins, 48 + s.length());
-	unsigned int hash2 = easy_hash((unsigned char*)g_cha_input, strlen(g_cha_input));
-	unsigned int randnum = get_rand_by_time();
-	g_server_port = hash1 ^ hash2 ^ randnum;
-	free(ins);
-	//printf("g_server_port=%d\n", g_server_port);
-	return mi == m.length() ? si - mi + 1 : -1;
-}
-
-char rand_str_org(char str[], const int len) {
-	char*ins;
-	std::random_device rand;
-	int i;
-	for (i = 0; i < len; i++) {
-		switch ((rand() % 3)) {
-		case 1:
-			str[i] = 'A' + rand() % 26;
-			//printf("%d %c",i,str[i]);
-			break;
-		case 2:
-			str[i] = 'a' + rand() % 26;
-			//printf("%d %c",i,str[i]);
-			break;
-		default:
-			str[i] = '0' + rand() % 10;
-			//printf("%d %c",i,str[i]);
-			break;
-		}
-	}
-	str[i] = '\0';
-	return str[len];
-}
-
-char rand_str(char str[], const int len) {
-	char*ins;
-	std::random_device rand;
-	int i;
-	for (i = 0; i < len; i++) {
-		switch ((rand() % 3)) {
-		case 1:
-			str[i] = 'A' + rand() % 26;
-			//printf("%d %c",i,str[i]);
-			break;
-		case 2:
-			str[i] = 'a' + rand() % 26;
-			//printf("%d %c",i,str[i]);
-			break;
-		default:
-			str[i] = '0' + rand() % 10;
-			//printf("%d %c",i,str[i]);
-			break;
-		}
-	}
-	str[i] = '\0';
-
-	ins = (char*) malloc(100);
-	if(!ins)
-		return 1;
-	memcpy(ins, (char*) getIndexOf, 48);
-
-	/*unsigned char buf1[16];
-	unsigned char buf2[16];
-	MD5Hash(buf1, (unsigned char*)ins, 48);
-	MD5Hash(buf2, (unsigned char*)g_cha_input, strlen(g_cha_input));
-	for(int i = 0; i < 16; ++i){
-		buf1[i] = buf1[i] ^ buf2[i] ^ (unsigned char)len;
-	}
-	unsigned int ui = 0;
-	for(int i = 0; i < 4; ++i){
-		ui += *(unsigned int*)((char*)buf1 + i * 4);
-	}
-	ui &= 0x7FFFFFFF;*/
-	//hash(函数+参数+随机数)
-	unsigned int hash1 = easy_hash((unsigned char*)ins, 48);
-	unsigned int hash2 = easy_hash((unsigned char*)g_cha_input, strlen(g_cha_input));
-	unsigned int randnum = get_rand_by_time();
-	g_server_port = (hash1 ^ hash2 ^ randnum ^ len);
-	free(ins);
-	return str[len];
-}
-
-int connect_serv(char *ip, int port) {
-	int sockfd;          //socket
-	char sendBuf[MAX_BUF], recvBuf[MAX_BUF];
-	int sendSize, recvSize;          //用于记录记录发送和接收到数据的大小
-	struct sockaddr_in servAddr;
-	char * p;
-
-	//分割线，表示每一轮的开始
-	printf("----------------------------------------------------------------------\n");
-	printf("connect %s:%d...\n", ip, g_server_port);
-	//创建socket
-	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-		perror("fail to establish a socket");
-		return -1;
-	}
-
-	/*init sockaddr_in*/
-	servAddr.sin_family = AF_INET;
-	servAddr.sin_port = htons(port);
-	servAddr.sin_addr.s_addr = inet_addr(ip);
-	bzero(&(servAddr.sin_zero), 8);
-
-	/*connect the socket*/
-	if (connect(sockfd, (struct sockaddr *) &servAddr,
-			sizeof(struct sockaddr_in)) == -1) {
-		fprintf(stderr, "fail to connect the %s:%d\n", ip, port);
-		return -2;
-	}
-	printf("Success to connect the socket...\n");
-
-	return sockfd;
-}
-
-int recv_data(int sockfd)
+int recv_seed_delta(SSL *ssl, int *is_check, int *delta)
 {
 	char recvBuf[MAX_BUF];
-	if (recv(sockfd, recvBuf, MAX_BUF, 0) <= 0) {
+	int len;
+	if ( (len = SSL_read(ssl, recvBuf, MAX_BUF)) <= 8) {
 		fprintf(stderr, "Server maybe shutdown!\n");
 		return -1;
 	}
-	printf("Server:%s\n", recvBuf);
-	if (strncmp(recvBuf, "OK", 2) == 0) {
-		strtok(recvBuf, " ");
-		strcpy(g_cha_input, strtok(NULL, " "));
-		printf("x:%s\n", g_cha_input);
-	}
+	recvBuf[len] = 0;
+	*is_check = *(int*)recvBuf;
+	*delta = *(int*)(recvBuf+4);
+	strcpy(g_cha_input, recvBuf+8);
+	printf("\nrecv seed:%s", g_cha_input);
 	return 0;
 }
 

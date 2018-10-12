@@ -24,6 +24,7 @@
 #include "asm/types.h"
 #include "linux/net_tstamp.h"
 #include "linux/errqueue.h"
+#include "libkmp.h"
 
 #ifndef SO_TIMESTAMPING
 # define SO_TIMESTAMPING         37
@@ -236,30 +237,34 @@ static int recv_packet_and_timestamp_ns(int sock, char *buf, int len, struct soc
 	return -1;
 }
 
-void timespec_add(timespec &t1, timespec &t2, timespec &ret) {
-	ret.tv_sec = t1.tv_sec + t2.tv_sec;
-	ret.tv_nsec = t1.tv_nsec + t2.tv_nsec;
-	if (ret.tv_nsec >= 1000000000) {
-		ret.tv_nsec -= 1000000000;
-		++ret.tv_sec;
-	}
-}
-
-//tv_sec表示正负,结果中tv_nsec部分永远为正  {-1,500000000} 对应的数为 -1 + 0.5 = -0.5
-void timespec_dec(timespec &t1, timespec &t2, timespec &ret) {
-	ret.tv_sec = t1.tv_sec - t2.tv_sec;
-	ret.tv_nsec = t1.tv_nsec - t2.tv_nsec;
-	if (ret.tv_nsec < 0) {
-		ret.tv_nsec += 1000000000;
-		--ret.tv_sec;
-	}
-}
+//void timespec_add(timespec &t1, timespec &t2, timespec &ret) {
+//	ret.tv_sec = t1.tv_sec + t2.tv_sec;
+//	ret.tv_nsec = t1.tv_nsec + t2.tv_nsec;
+//	if (ret.tv_nsec >= 1000000000) {
+//		ret.tv_nsec -= 1000000000;
+//		++ret.tv_sec;
+//	}
+//}
+//
+////tv_sec表示正负,结果中tv_nsec部分永远为正  {-1,500000000} 对应的数为 -1 + 0.5 = -0.5
+//void timespec_dec(timespec &t1, timespec &t2, timespec &ret) {
+//	ret.tv_sec = t1.tv_sec - t2.tv_sec;
+//	ret.tv_nsec = t1.tv_nsec - t2.tv_nsec;
+//	if (ret.tv_nsec < 0) {
+//		ret.tv_nsec += 1000000000;
+//		--ret.tv_sec;
+//	}
+//}
 
 void timespec_div_int(timespec &t1, int i) {
-	t1.tv_sec /= 2;
+	__time_t tv_sec = t1.tv_sec;
+	t1.tv_sec = tv_sec / 2;
 	t1.tv_nsec /= 2;
-	if (t1.tv_sec % 2) {
+	if (tv_sec % 2) {
 		t1.tv_nsec += 500000000;
+	}
+	if (tv_sec < 0){
+		t1.tv_sec -= 1;  // (-1) / 2 = 0
 	}
 }
 //offset: t1端比t2端慢多少 负数表示t1端比t2端时间要快
@@ -268,10 +273,10 @@ void calc_offset_delay(timespec &offset, timespec &delay, timespec &t1, timespec
 	// delay  = ( t4 - t3 + t2 - t1 ) / 2
 	// offset = ( t2 - t1 - t4 + t3 ) / 2
 	timespec tt1, tt2;
-	timespec_dec(t2, t1, tt1);
-	timespec_dec(t4, t3, tt2);
-	timespec_add(tt1, tt2, delay);
-	timespec_dec(tt1, tt2,offset);
+	timespec_dec(&t2, &t1, &tt1);
+	timespec_dec(&t4, &t3, &tt2);
+	timespec_add(&tt1, &tt2, &delay);
+	timespec_dec(&tt1, &tt2,&offset);
 	timespec_div_int(delay, 2);
 	timespec_div_int(offset, 2);
 }

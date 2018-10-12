@@ -10,8 +10,8 @@ kmp_server
 **basic steps**  
 1. c -> s connect
 2. c -> s @
-3. s -> c 4B is_c  + 4B delta + seed
-4. c -> s 4Bchecksum + fun_name + param + ...
+3. s -> c 4B is_ckeck + 4B delta + seed
+4. c -> s 4B checksum + fun_name + param + ...
 5. c s&ensp; &ensp; call fun(param, ...)
 6. c -> s
 
